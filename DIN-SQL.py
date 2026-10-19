@@ -2,6 +2,7 @@ import pandas as pd
 import time
 import sys
 from llm_provider import LLMConfig, generate
+from response_utils import classification_parts, sql_response
 
 
 #----------------------------------------------------prompts-----------------------------------------------
@@ -572,97 +573,52 @@ def GPT4_generation(prompt):
 def GPT4_debug(prompt):
   return generate(LLM_CONFIG, prompt, max_tokens=350, stop=["#", ";", "\n\n"])
 
+def retry_call(function, prompt):
+    for attempt in range(3):
+        try:
+            return function(prompt)
+        except Exception:
+            if attempt == 2:
+                raise
+            time.sleep(3)
+
+
+def predict_one(row):
+    schema_response = retry_call(GPT4_generation,
+        schema_linking_prompt_maker(row['question'], row['db_id']))
+    schema_links = schema_response.split("Schema_links: ", 1)[-1] if "Schema_links: " in schema_response else "[]"
+    classification = retry_call(GPT4_generation,
+        classification_prompt_maker(row['question'], row['db_id'], schema_links[1:]))
+    label, sub_questions = classification_parts(classification, row['question'])
+    print(f"Classification: {label}", flush=True)
+    if label == "EASY":
+        prompt = easy_prompt_maker(row['question'], row['db_id'], schema_links)
+    elif label == "NON-NESTED":
+        prompt = medium_prompt_maker(row['question'], row['db_id'], schema_links)
+    else:
+        prompt = hard_prompt_maker(row['question'], row['db_id'], schema_links, sub_questions)
+    generated = retry_call(GPT4_generation, prompt)
+    candidate = sql_response(generated.split("SQL: ")[-1])
+    debugged = retry_call(GPT4_debug, debuger(row['question'], row['db_id'], candidate))
+    return sql_response(debugged, select_fragment=True)
+
+
 if __name__ == '__main__':
-    spider_schema,spider_primary,spider_foreign = creatiing_schema(DATASET_SCHEMA)
+    import json
+    import traceback
+    spider_schema, spider_primary, spider_foreign = creatiing_schema(DATASET_SCHEMA)
     val_df = load_data(DATASET)
-    print(f"Number of data samples {val_df.shape[0]}")
-    CODEX = []
-    for index, row in val_df.iterrows():
-        #if index < 405: continue #for testing
-        print(f"index is {index}")
-        print(row['query'])
-        print(row['question'])
-        schema_links = None
-        while schema_links is None:
+    print(f"Number of data samples {val_df.shape[0]}", flush=True)
+    # Stream each position, including failures; never lose earlier predictions on error.
+    with open(OUTPUT_FILE, 'w', encoding='utf-8') as output, open(OUTPUT_FILE + '.errors.jsonl', 'w', encoding='utf-8') as errors:
+        for index, row in val_df.iterrows():
+            print(f"index is {index}", flush=True)
             try:
-                schema_links = GPT4_generation(
-                    schema_linking_prompt_maker(row['question'], row['db_id']))
-            except:
-                time.sleep(3)
-                pass
-        try:
-            schema_links = schema_links.split("Schema_links: ")[1]
-        except:
-            print("Slicing error for the schema_linking module")
-            schema_links = "[]"
-        #print(schema_links)
-        classification = None
-        while classification is None:
-            try:
-                classification = GPT4_generation(
-                    classification_prompt_maker(row['question'], row['db_id'], schema_links[1:]))
-            except:
-                time.sleep(3)
-                pass
-        try:
-            predicted_class = classification.split("Label: ")[1]
-        except:
-            print("Slicing error for the classification module")
-            predicted_class = '"NESTED"'
-        #print(classification)
-        if '"EASY"' in predicted_class:
-            print("EASY")
-            SQL = None
-            while SQL is None:
-                try:
-                    SQL = GPT4_generation(easy_prompt_maker(row['question'], row['db_id'], schema_links))
-                except:
-                    time.sleep(3)
-                    pass
-        elif '"NON-NESTED"' in predicted_class:
-            print("NON-NESTED")
-            SQL = None
-            while SQL is None:
-                try:
-                    SQL = GPT4_generation(medium_prompt_maker(row['question'], row['db_id'], schema_links))
-                except:
-                    time.sleep(3)
-                    pass
-            try:
-                SQL = SQL.split("SQL: ")[1]
-            except:
-                print("SQL slicing error")
-                SQL = "SELECT"
-        else:
-            sub_questions = classification.split('questions = ["')[1].split('"]')[0]
-            print("NESTED")
-            SQL = None
-            while SQL is None:
-                try:
-                    SQL = GPT4_generation(
-                        hard_prompt_maker(row['question'], row['db_id'], schema_links, sub_questions))
-                except:
-                    time.sleep(3)
-                    pass
-            try:
-                SQL = SQL.split("SQL: ")[1]
-            except:
-                print("SQL slicing error")
-                SQL = "SELECT"
-        print(SQL)
-        debugged_SQL = None
-        while debugged_SQL is None:
-            try:
-                debugged_SQL = GPT4_debug(debuger(row['question'], row['db_id'], SQL)).replace("\n", " ")
-            except:
-                time.sleep(3)
-                pass
-        SQL = "SELECT " + debugged_SQL
-        print(SQL)
-        CODEX.append([row['question'], SQL, row['query'], row['db_id']])
-        #break
-    df = pd.DataFrame(CODEX, columns=['NLQ', 'PREDICTED SQL', 'GOLD SQL', 'DATABASE'])
-    results = df['PREDICTED SQL'].tolist()
-    with open(OUTPUT_FILE, 'w') as f:
-        for line in results:
-            f.write(f"{line}\n")
+                sql = predict_one(row)
+            except Exception as error:
+                traceback.print_exc()
+                print(json.dumps(dict(index=int(index), error=str(error))), file=errors, flush=True)
+                sql = ""
+            print(sql, flush=True)
+            output.write(sql + "\n")
+            output.flush()
