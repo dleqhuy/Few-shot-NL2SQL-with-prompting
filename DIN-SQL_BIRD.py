@@ -3,6 +3,7 @@ import re
 import pandas as pd
 import json
 import glob
+from llm_provider import LLMConfig
 
 from typing import List, Tuple
 from langchain.sql_database import SQLDatabase
@@ -15,10 +16,15 @@ from langchain.prompts import (
 )
 
 
-# CHANGE THIS TO YOUR OPENAI API KEY
-
-os.environ["OPENAI_API_KEY"] = ""
-CHAT = ChatOpenAI(model="gpt-4-32k",temperature=0,max_tokens=2000)
+LLM_CONFIG = LLMConfig.from_env(default_model="gpt-4-32k")
+CHAT = ChatOpenAI(
+    openai_api_key=LLM_CONFIG.api_key,
+    openai_api_base=LLM_CONFIG.base_url,
+    model=LLM_CONFIG.model,
+    temperature=0,
+    max_tokens=2000,
+    request_timeout=120,
+)
 dev_db_path = "dev/dev_databases"
 dev_df = pd.read_json("dev/dev.json")
 
@@ -1297,4 +1303,4 @@ if __name__ == "__main__":
         update_json_file("predict_dev.json", index, one_liner_sql_query, row["db_id"])
         print("final sql query: ", one_liner_sql_query)
         print("Gold sql query: ", row["SQL"])
-        print("--------------------------------------------------")   
+        print("--------------------------------------------------")

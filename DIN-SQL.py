@@ -1,8 +1,7 @@
 import pandas as pd
 import time
-import openai
-import os
 import sys
+from llm_provider import LLMConfig, generate
 
 
 #----------------------------------------------------prompts-----------------------------------------------
@@ -434,16 +433,14 @@ SQL: SELECT T3.title ,  T3.credits FROM classroom AS T1 JOIN SECTION AS T2 ON T1
 '''
 #----------------------------------------------------------------------------------------------------------
 
-if sys.argv[1] == "--dataset" and sys.argv[3] == "--output":
+if len(sys.argv) == 5 and sys.argv[1] == "--dataset" and sys.argv[3] == "--output":
     DATASET_SCHEMA = sys.argv[2]+"tables.json"
     DATASET = sys.argv[2]+"dev.json"
     OUTPUT_FILE = sys.argv[4]
 else:
-    raise Exception("Please use this format python CoT.py --dataset data/ --output predicted_sql.txt")
+    raise Exception("Please use this format: python DIN-SQL.py --dataset data/ --output predicted_sql.txt")
 
-API_KEY = #key
-os.environ["OPENAI_API_KEY"] = API_KEY
-openai.api_key = os.getenv("OPENAI_API_KEY")
+LLM_CONFIG = LLMConfig.from_env()
 
 
 def load_data(DATASET):
@@ -570,34 +567,10 @@ def debuger(test_sample_text,database,sql):
   prompt = instruction + fields+ '#### Question: ' + test_sample_text + '\n#### SQLite SQL QUERY\n' + sql +'\n#### SQLite FIXED SQL QUERY\nSELECT'
   return prompt
 def GPT4_generation(prompt):
-  response = openai.ChatCompletion.create(
-    model="gpt-4",
-    messages=[{"role": "user", "content": prompt}],
-    n = 1,
-    stream = False,
-    temperature=0.0,
-    max_tokens=600,
-    top_p = 1.0,
-    frequency_penalty=0.0,
-    presence_penalty=0.0,
-    stop = ["Q:"]
-  )
-  return response['choices'][0]['message']['content']
+  return generate(LLM_CONFIG, prompt, max_tokens=600, stop=["Q:"])
 
 def GPT4_debug(prompt):
-  response = openai.ChatCompletion.create(
-    model="gpt-4",
-    messages=[{"role": "user", "content": prompt}],
-    n = 1,
-    stream = False,
-    temperature=0.0,
-    max_tokens=350,
-    top_p = 1.0,
-    frequency_penalty=0.0,
-    presence_penalty=0.0,
-    stop = ["#", ";","\n\n"]
-  )
-  return response['choices'][0]['message']['content']
+  return generate(LLM_CONFIG, prompt, max_tokens=350, stop=["#", ";", "\n\n"])
 
 if __name__ == '__main__':
     spider_schema,spider_primary,spider_foreign = creatiing_schema(DATASET_SCHEMA)
